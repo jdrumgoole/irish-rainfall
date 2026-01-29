@@ -1,17 +1,28 @@
-# Irish Rainfall
+# Irish Rainfall Dashboard
 
 Analysis tools and interactive dashboard for the Long-term Island of Ireland Precipitation (IIP) network dataset (1850-2010).
 
+![Irish Rainfall Dashboard](docs/screenshot.png)
+
+## Features
+
+- **Interactive Map**: 25 weather stations on a Leaflet map, color-coded by average rainfall. Click a station to view details or select from dropdown to highlight on map.
+- **Time Series Chart**: Annual rainfall trends with configurable moving averages (5/10/20/30 years)
+- **Change Point Detection**: Automatic detection of significant rainfall shifts using the ruptures PELT algorithm
+- **Monthly Climatology Heatmap**: Average rainfall by station and month
+- **Period Comparison**: Compare rainfall between any two time periods with percentage change
+- **Seasonal Analysis**: Winter/Spring/Summer/Autumn breakdown by station
+
 ## Dataset
 
-The dataset contains monthly rainfall measurements from 25 weather stations across Ireland,
-spanning 161 years from 1850 to 2010. Data is sourced from [Met Éireann](https://www.met.ie/).
+The dataset contains monthly rainfall measurements from 25 weather stations across Ireland, spanning 161 years from 1850 to 2010. Data is sourced from [Met Éireann](https://www.met.ie/).
 
-## Reference
-
-If you use this dataset, please cite:
-
-> Mateus, C.; Potito, A.; Curley, M. 2020. Reconstruction of a long-term historical daily maximum and minimum air temperature network dataset for Ireland (1831-1968). *Geoscience Data Journal*. http://dx.doi.org/10.1002/gdj3.92
+**Key Statistics:**
+- 25 Weather Stations
+- 161 Years of Data (1850-2010)
+- National Average: 1094mm/yr
+- Wettest Station: Ardara (1692mm/yr)
+- Driest Station: Dublin Airport (736mm/yr)
 
 ## Installation
 
@@ -83,6 +94,19 @@ Stop the server:
 invoke stop
 ```
 
+### Change Point Detection
+
+Run change point analysis from the command line:
+
+```bash
+uv run python -m irish_rainfall.changepoint
+```
+
+Options:
+- `--station ID` - Analyze a specific station (default: national average)
+- `--penalty VALUE` - Sensitivity (higher = fewer change points, default: 3.0)
+- `--output json` - Output results as JSON
+
 ### Database Info
 
 View database statistics:
@@ -90,14 +114,6 @@ View database statistics:
 ```bash
 invoke db-info
 ```
-
-## Dashboard Features
-
-- **Interactive Map**: 25 stations on a Leaflet map, color-coded by average rainfall
-- **Time Series Chart**: Annual rainfall trends with configurable moving averages
-- **Monthly Climatology Heatmap**: Average rainfall by station and month
-- **Period Comparison**: Compare rainfall between any two time periods
-- **Seasonal Analysis**: Winter/Spring/Summer/Autumn breakdown by station
 
 ## API Endpoints
 
@@ -112,6 +128,7 @@ The dashboard includes a REST API:
 - `GET /api/rainfall/trends` - National trends with moving average
 - `GET /api/rainfall/anomalies` - Departures from baseline
 - `GET /api/rainfall/comparison` - Compare two periods
+- `GET /api/rainfall/changepoints` - Detected change points
 
 ## Data Directory Structure
 
@@ -126,7 +143,17 @@ data/
     └── readme.txt        # Original dataset readme
 ```
 
+## Reference
+
+If you use this dataset, please cite:
+
+> Mateus, C.; Potito, A.; Curley, M. 2020. Reconstruction of a long-term historical daily maximum and minimum air temperature network dataset for Ireland (1831-1968). *Geoscience Data Journal*. http://dx.doi.org/10.1002/gdj3.92
+
 ## Data Source
 
 Data is downloaded from Met Éireann:
 https://www.met.ie/cms/assets/uploads/2018/01/Long-Term-IIP-network-1.zip
+
+## License
+
+MIT
