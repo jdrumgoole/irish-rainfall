@@ -462,6 +462,8 @@
         let selectedStation = null;
         let map;
         let markers = [];
+        let markerMap = {};  // Map station ID to marker
+        let highlightedMarker = null;
 
         // Color scale for rainfall
         function getRainfallColor(rainfall) {
@@ -484,6 +486,7 @@
         function addStationMarkers() {
             markers.forEach(m => map.removeLayer(m));
             markers = [];
+            markerMap = {};
 
             stationSummary.forEach(station => {
                 const color = getRainfallColor(station.avg_annual_rainfall);
@@ -496,6 +499,14 @@
                     opacity: 1,
                     fillOpacity: 0.8
                 });
+
+                // Store original style for unhighlighting
+                marker.originalStyle = {
+                    radius: 10,
+                    fillColor: color,
+                    color: '#fff',
+                    weight: 2
+                };
 
                 const popupContent = `
                     <div class="station-popup">
@@ -514,13 +525,46 @@
                 marker.bindPopup(popupContent);
                 marker.addTo(map);
                 markers.push(marker);
+                markerMap[station.id] = marker;
             });
+        }
+
+        // Highlight a station on the map
+        function highlightStation(stationId) {
+            // Reset previously highlighted marker
+            if (highlightedMarker) {
+                highlightedMarker.setStyle(highlightedMarker.originalStyle);
+                highlightedMarker.setRadius(highlightedMarker.originalStyle.radius);
+            }
+
+            if (!stationId) {
+                highlightedMarker = null;
+                return;
+            }
+
+            const marker = markerMap[stationId];
+            if (marker) {
+                // Highlight the marker
+                marker.setStyle({
+                    color: '#2563eb',
+                    weight: 4,
+                    fillOpacity: 1
+                });
+                marker.setRadius(14);
+                marker.bringToFront();
+
+                // Pan map to the station
+                map.panTo(marker.getLatLng());
+
+                highlightedMarker = marker;
+            }
         }
 
         // Select a station
         function selectStation(stationId) {
             selectedStation = stationId;
             document.getElementById('station-select').value = stationId || '';
+            highlightStation(stationId);
             updateTimeSeries();
         }
 
@@ -854,7 +898,11 @@
         }
 
         // Event listeners
-        document.getElementById('station-select').addEventListener('change', updateTimeSeries);
+        document.getElementById('station-select').addEventListener('change', function() {
+            const stationId = this.value;
+            highlightStation(stationId ? parseInt(stationId) : null);
+            updateTimeSeries();
+        });
         document.getElementById('window-select').addEventListener('change', updateTimeSeries);
 
         // Initialize dashboard
