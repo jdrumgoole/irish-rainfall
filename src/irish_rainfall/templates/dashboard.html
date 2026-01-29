@@ -169,9 +169,17 @@
 
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(5, 1fr);
             gap: 1rem;
             margin-bottom: 1.5rem;
+        }
+
+        /* Smaller Leaflet zoom controls */
+        .leaflet-control-zoom a {
+            width: 26px !important;
+            height: 26px !important;
+            line-height: 26px !important;
+            font-size: 14px !important;
         }
 
         .stat-card {
@@ -278,13 +286,13 @@
             }
 
             .stats-grid {
-                grid-template-columns: repeat(2, 1fr);
+                grid-template-columns: repeat(3, 1fr);
             }
         }
 
         @media (max-width: 640px) {
             .stats-grid {
-                grid-template-columns: 1fr;
+                grid-template-columns: repeat(2, 1fr);
             }
 
             .controls {
@@ -318,6 +326,10 @@
             <div class="stat-card">
                 <div class="label">Wettest Station</div>
                 <div class="value" id="stat-wettest" style="font-size: 1.25rem;">--</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Driest Station</div>
+                <div class="value" id="stat-driest" style="font-size: 1.25rem;">--</div>
             </div>
         </div>
 
@@ -546,6 +558,10 @@
             const wettest = stationSummary[0]; // Already sorted by avg rainfall desc
             document.getElementById('stat-wettest').textContent =
                 `${wettest.name} (${wettest.avg_annual_rainfall.toFixed(0)}mm)`;
+
+            const driest = stationSummary[stationSummary.length - 1]; // Last = driest
+            document.getElementById('stat-driest').textContent =
+                `${driest.name} (${driest.avg_annual_rainfall.toFixed(0)}mm)`;
         }
 
         // Update time series chart
