@@ -1,0 +1,31 @@
+[project]
+name = "irish-rainfall"
+version = "0.1.0"
+description = "Analysis tools for the Long-term Island of Ireland Precipitation (IIP) network dataset (1850-2010)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas>=2.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "jinja2>=3.1.0",
+    "pyyaml>=6.0",
+    "ruptures>=1.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "invoke>=2.2.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/irish_rainfall"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

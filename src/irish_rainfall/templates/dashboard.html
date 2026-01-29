@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Irish Rainfall Dashboard (1850-2010)</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <!-- Plotly.js -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --secondary-color: #64748b;
+            --background: #f8fafc;
+            --card-bg: #ffffff;
+            --border-color: #e2e8f0;
+            --text-primary: #1e293b;
+            --text-secondary: #64748b;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background-color: var(--background);
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+            color: white;
+            padding: 1.5rem 2rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .header h1 {
+            font-size: 1.75rem;
+            font-weight: 600;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 0.95rem;
+            margin-top: 0.25rem;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 1.5rem;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 1.5fr;
+            gap: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .full-width {
+            grid-column: 1 / -1;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            border: 1px solid var(--border-color);
+            overflow: hidden;
+        }
+
+        .card-header {
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border-color);
+            background: #f8fafc;
+        }
+
+        .card-header h2 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .card-header p {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-top: 0.25rem;
+        }
+
+        .card-body {
+            padding: 1rem;
+        }
+
+        #map {
+            height: 450px;
+            width: 100%;
+            border-radius: 8px;
+        }
+
+        #timeseries-chart, #heatmap-chart, #trend-chart, #comparison-chart {
+            width: 100%;
+            height: 400px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            align-items: center;
+            padding: 0.75rem 1rem;
+            background: #f1f5f9;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .control-group label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        select, input[type="number"] {
+            padding: 0.5rem 0.75rem;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 0.9rem;
+            background: white;
+            min-width: 120px;
+        }
+
+        select:focus, input:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        button {
+            padding: 0.5rem 1rem;
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #1d4ed8;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .stat-card {
+            background: var(--card-bg);
+            padding: 1.25rem;
+            border-radius: 10px;
+            border: 1px solid var(--border-color);
+        }
+
+        .stat-card .label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-card .value {
+            font-size: 1.75rem;
+            font-weight: 600;
+            color: var(--primary-color);
+        }
+
+        .stat-card .unit {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            margin-left: 0.25rem;
+        }
+
+        .legend {
+            display: flex;
+            justify-content: center;
+            gap: 1.5rem;
+            padding: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+        }
+
+        .loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 300px;
+            color: var(--text-secondary);
+        }
+
+        .station-popup {
+            min-width: 200px;
+        }
+
+        .station-popup h3 {
+            margin-bottom: 0.5rem;
+            color: var(--primary-color);
+        }
+
+        .station-popup p {
+            margin: 0.25rem 0;
+            font-size: 0.9rem;
+        }
+
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .tab {
+            padding: 0.75rem 1.25rem;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+        }
+
+        .tab.active {
+            color: var(--primary-color);
+            border-bottom-color: var(--primary-color);
+            font-weight: 500;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @media (max-width: 1024px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 640px) {
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <h1>Irish Rainfall Dashboard</h1>
+        <p>Long-term Island of Ireland Precipitation Network (1850-2010) - 25 Stations - 161 Years</p>
+    </header>
+
+    <main class="container">
+        <!-- Summary Stats -->
+        <div class="stats-grid" id="stats-grid">
+            <div class="stat-card">
+                <div class="label">Weather Stations</div>
+                <div class="value">25</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Years of Data</div>
+                <div class="value">161</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">National Avg Rainfall</div>
+                <div class="value" id="stat-avg-rainfall">--<span class="unit">mm/yr</span></div>
+            </div>
+            <div class="stat-card">
+                <div class="label">Wettest Station</div>
+                <div class="value" id="stat-wettest" style="font-size: 1.25rem;">--</div>
+            </div>
+        </div>
+
+        <!-- Map and Time Series -->
+        <div class="dashboard-grid">
+            <!-- Map Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h2>Station Map</h2>
+                    <p>Click a station to view details and select for charts</p>
+                </div>
+                <div class="card-body">
+                    <div id="map"></div>
+                </div>
+                <div class="legend">
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #22c55e;"></div>
+                        <span>&lt; 900mm/yr</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #eab308;"></div>
+                        <span>900-1100mm/yr</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #f97316;"></div>
+                        <span>1100-1300mm/yr</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ef4444;"></div>
+                        <span>&gt; 1300mm/yr</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Time Series Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h2>Annual Rainfall Trends</h2>
+                    <p>National average with moving average and detected change points (dashed lines)</p>
+                </div>
+                <div class="controls">
+                    <div class="control-group">
+                        <label>Station:</label>
+                        <select id="station-select">
+                            <option value="">National Average</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label>Moving Avg:</label>
+                        <select id="window-select">
+                            <option value="5">5 years</option>
+                            <option value="10" selected>10 years</option>
+                            <option value="20">20 years</option>
+                            <option value="30">30 years</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div id="timeseries-chart"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Heatmap and Comparison -->
+        <div class="dashboard-grid">
+            <!-- Monthly Climatology Heatmap -->
+            <div class="card full-width">
+                <div class="card-header">
+                    <h2>Monthly Climatology by Station</h2>
+                    <p>Average monthly rainfall (mm) - Stations ordered by total annual rainfall</p>
+                </div>
+                <div class="card-body">
+                    <div id="heatmap-chart" style="height: 500px;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Period Comparison -->
+        <div class="dashboard-grid">
+            <div class="card full-width">
+                <div class="card-header">
+                    <h2>Climate Period Comparison</h2>
+                    <p>Side-by-side comparison of average annual rainfall (mm) - grey bars show earlier period, colored bars show later period (green = increase, red = decrease)</p>
+                </div>
+                <div class="controls">
+                    <div class="control-group">
+                        <label>Period 1:</label>
+                        <input type="number" id="period1-start" value="1850" min="1850" max="2010" style="width: 80px;">
+                        <span>to</span>
+                        <input type="number" id="period1-end" value="1900" min="1850" max="2010" style="width: 80px;">
+                    </div>
+                    <div class="control-group">
+                        <label>Period 2:</label>
+                        <input type="number" id="period2-start" value="1960" min="1850" max="2010" style="width: 80px;">
+                        <span>to</span>
+                        <input type="number" id="period2-end" value="2010" min="1850" max="2010" style="width: 80px;">
+                    </div>
+                    <button onclick="updateComparison()">Compare</button>
+                </div>
+                <div class="card-body">
+                    <div id="comparison-chart"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Seasonal Analysis -->
+        <div class="dashboard-grid">
+            <div class="card full-width">
+                <div class="card-header">
+                    <h2>Seasonal Patterns by Station</h2>
+                    <p>Average monthly rainfall by season (Winter: DJF, Spring: MAM, Summer: JJA, Autumn: SON)</p>
+                </div>
+                <div class="card-body">
+                    <div id="seasonal-chart" style="height: 400px;"></div>
+                </div>
+            </div>
+        </div>
+
+        <footer style="text-align: center; padding: 2rem; color: var(--text-secondary); font-size: 0.85rem;">
+            <p>Data source: Long-term Island of Ireland Precipitation (IIP) Network</p>
+            <p>Reference: Mateus, C.; Potito, A.; Curley, M. 2020. Geoscience Data Journal.
+               <a href="http://dx.doi.org/10.1002/gdj3.92" target="_blank">doi:10.1002/gdj3.92</a></p>
+        </footer>
+    </main>
+
+    <script>
+        // Global state
+        let stations = [];
+        let stationSummary = [];
+        let selectedStation = null;
+        let map;
+        let markers = [];
+
+        // Color scale for rainfall
+        function getRainfallColor(rainfall) {
+            if (rainfall < 900) return '#22c55e';
+            if (rainfall < 1100) return '#eab308';
+            if (rainfall < 1300) return '#f97316';
+            return '#ef4444';
+        }
+
+        // Initialize map
+        function initMap() {
+            map = L.map('map').setView([53.5, -7.5], 6);
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap contributors'
+            }).addTo(map);
+        }
+
+        // Add station markers to map
+        function addStationMarkers() {
+            markers.forEach(m => map.removeLayer(m));
+            markers = [];
+
+            stationSummary.forEach(station => {
+                const color = getRainfallColor(station.avg_annual_rainfall);
+
+                const marker = L.circleMarker([station.latitude, station.longitude], {
+                    radius: 10,
+                    fillColor: color,
+                    color: '#fff',
+                    weight: 2,
+                    opacity: 1,
+                    fillOpacity: 0.8
+                });
+
+                const popupContent = `
+                    <div class="station-popup">
+                        <h3>${station.name}</h3>
+                        <p><strong>County:</strong> ${station.county || 'N/A'}</p>
+                        <p><strong>Elevation:</strong> ${station.elevation_metres?.toFixed(0) || 'N/A'}m</p>
+                        <p><strong>Avg Annual:</strong> ${station.avg_annual_rainfall?.toFixed(0)} mm</p>
+                        <p><strong>Min Year:</strong> ${station.min_annual_rainfall?.toFixed(0)} mm</p>
+                        <p><strong>Max Year:</strong> ${station.max_annual_rainfall?.toFixed(0)} mm</p>
+                        <button onclick="selectStation(${station.id})" style="margin-top: 0.5rem; width: 100%;">
+                            View Details
+                        </button>
+                    </div>
+                `;
+
+                marker.bindPopup(popupContent);
+                marker.addTo(map);
+                markers.push(marker);
+            });
+        }
+
+        // Select a station
+        function selectStation(stationId) {
+            selectedStation = stationId;
+            document.getElementById('station-select').value = stationId || '';
+            updateTimeSeries();
+        }
+
+        // Fetch stations and populate select
+        async function loadStations() {
+            const response = await fetch('/api/stations');
+            stations = await response.json();
+
+            const select = document.getElementById('station-select');
+            stations.forEach(station => {
+                const option = document.createElement('option');
+                option.value = station.id;
+                option.textContent = `${station.name} (${station.county || 'N/A'})`;
+                select.appendChild(option);
+            });
+        }
+
+        // Fetch station summary for map
+        async function loadStationSummary() {
+            const response = await fetch('/api/rainfall/station-summary');
+            stationSummary = await response.json();
+
+            addStationMarkers();
+            updateStats();
+        }
+
+        // Update stats cards
+        function updateStats() {
+            if (stationSummary.length === 0) return;
+
+            const totalAvg = stationSummary.reduce((sum, s) => sum + s.avg_annual_rainfall, 0) / stationSummary.length;
+            document.getElementById('stat-avg-rainfall').innerHTML =
+                `${totalAvg.toFixed(0)}<span class="unit">mm/yr</span>`;
+
+            const wettest = stationSummary[0]; // Already sorted by avg rainfall desc
+            document.getElementById('stat-wettest').textContent =
+                `${wettest.name} (${wettest.avg_annual_rainfall.toFixed(0)}mm)`;
+        }
+
+        // Update time series chart
+        async function updateTimeSeries() {
+            const stationId = document.getElementById('station-select').value;
+            const window = parseInt(document.getElementById('window-select').value);
+
+            let url = `/api/rainfall/annual?start_year=1850&end_year=2010`;
+            if (stationId) {
+                url += `&station_id=${stationId}`;
+            }
+
+            // Fetch rainfall data and change points in parallel
+            const [rainfallResponse, changepointsResponse] = await Promise.all([
+                fetch(url),
+                fetch(`/api/rainfall/changepoints${stationId ? `?station_id=${stationId}` : ''}`)
+            ]);
+
+            const data = await rainfallResponse.json();
+            const changepoints = await changepointsResponse.json();
+
+            // Calculate moving average
+            const years = data.map(d => d.year);
+            const values = data.map(d => d.annual_total);
+            const movingAvg = [];
+
+            for (let i = 0; i < values.length; i++) {
+                if (i >= window - 1) {
+                    const slice = values.slice(i - window + 1, i + 1);
+                    movingAvg.push(slice.reduce((a, b) => a + b, 0) / slice.length);
+                } else {
+                    movingAvg.push(null);
+                }
+            }
+
+            const traces = [
+                {
+                    x: years,
+                    y: values,
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: 'Annual Rainfall',
+                    line: { color: '#93c5fd', width: 1 },
+                    fill: 'tozeroy',
+                    fillcolor: 'rgba(147, 197, 253, 0.3)'
+                },
+                {
+                    x: years,
+                    y: movingAvg,
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: `${window}-Year Moving Avg`,
+                    line: { color: '#2563eb', width: 3 }
+                }
+            ];
+
+            // Create vertical lines for change points
+            const shapes = changepoints.map(cp => ({
+                type: 'line',
+                x0: cp.year,
+                x1: cp.year,
+                y0: 0,
+                y1: 1,
+                yref: 'paper',
+                line: {
+                    color: cp.change_mm > 0 ? '#22c55e' : '#ef4444',
+                    width: 2,
+                    dash: 'dash'
+                }
+            }));
+
+            // Create annotations for change points - positioned at baseline
+            // Sort by year and stagger when close together
+            const sortedCps = [...changepoints].sort((a, b) => a.year - b.year);
+            const annotations = sortedCps.map((cp, i) => {
+                // Stagger y positions when annotations are close together
+                let yPos = 50;  // Near baseline
+
+                // Check if previous changepoint is within 20 years
+                if (i > 0 && cp.year - sortedCps[i-1].year < 20) {
+                    yPos = 150;  // Stagger slightly higher
+                }
+
+                return {
+                    x: cp.year,
+                    y: yPos,
+                    text: `${cp.change_mm > 0 ? '+' : ''}${cp.change_percent.toFixed(0)}%`,
+                    showarrow: false,
+                    font: {
+                        size: 11,
+                        color: '#ffffff',
+                        weight: 'bold'
+                    },
+                    bgcolor: cp.change_mm > 0 ? '#22c55e' : '#ef4444',
+                    bordercolor: cp.change_mm > 0 ? '#16a34a' : '#dc2626',
+                    borderwidth: 1,
+                    borderpad: 3
+                };
+            });
+
+            const layout = {
+                margin: { t: 30, r: 20, b: 50, l: 60 },
+                xaxis: { title: 'Year' },
+                yaxis: { title: 'Rainfall (mm)', range: [0, 1500] },
+                legend: { x: 0.5, xanchor: 'center', y: 1.12, orientation: 'h' },
+                hovermode: 'x unified',
+                shapes: shapes,
+                annotations: annotations
+            };
+
+            Plotly.newPlot('timeseries-chart', traces, layout, { responsive: true });
+        }
+
+        // Load and display heatmap
+        async function loadHeatmap() {
+            const response = await fetch('/api/rainfall/climatology');
+            const data = await response.json();
+
+            // Get unique stations and sort by total rainfall
+            const stationTotals = {};
+            data.forEach(d => {
+                if (!stationTotals[d.station_name]) {
+                    stationTotals[d.station_name] = 0;
+                }
+                stationTotals[d.station_name] += d.avg_rainfall;
+            });
+
+            const stationOrder = Object.entries(stationTotals)
+                .sort((a, b) => b[1] - a[1])
+                .map(([name]) => name);
+
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+            // Build z matrix
+            const z = [];
+            stationOrder.forEach(station => {
+                const row = [];
+                for (let month = 1; month <= 12; month++) {
+                    const record = data.find(d => d.station_name === station && d.month === month);
+                    row.push(record ? record.avg_rainfall : 0);
+                }
+                z.push(row);
+            });
+
+            const trace = {
+                z: z,
+                x: months,
+                y: stationOrder,
+                type: 'heatmap',
+                colorscale: [
+                    [0, '#f0fdf4'],
+                    [0.25, '#86efac'],
+                    [0.5, '#22c55e'],
+                    [0.75, '#15803d'],
+                    [1, '#14532d']
+                ],
+                colorbar: {
+                    title: 'mm',
+                    titleside: 'right'
+                },
+                hovertemplate: '<b>%{y}</b><br>%{x}: %{z:.1f} mm<extra></extra>'
+            };
+
+            const layout = {
+                margin: { t: 20, r: 100, b: 50, l: 150 },
+                xaxis: { title: 'Month', side: 'bottom' },
+                yaxis: { title: '', autorange: 'reversed' }
+            };
+
+            Plotly.newPlot('heatmap-chart', [trace], layout, { responsive: true });
+        }
+
+        // Load seasonal chart
+        async function loadSeasonalChart() {
+            const response = await fetch('/api/rainfall/seasonal');
+            const data = await response.json();
+
+            // Group by station
+            const stationData = {};
+            data.forEach(d => {
+                if (!stationData[d.station_name]) {
+                    stationData[d.station_name] = {};
+                }
+                stationData[d.station_name][d.season] = d.avg_monthly_rainfall * 3; // Quarterly total
+            });
+
+            const seasons = ['Winter', 'Spring', 'Summer', 'Autumn'];
+            const seasonColors = {
+                'Winter': '#3b82f6',
+                'Spring': '#22c55e',
+                'Summer': '#eab308',
+                'Autumn': '#f97316'
+            };
+
+            // Sort stations by total rainfall
+            const stationOrder = Object.entries(stationData)
+                .map(([name, seasons]) => ({
+                    name,
+                    total: Object.values(seasons).reduce((a, b) => a + b, 0)
+                }))
+                .sort((a, b) => b.total - a.total)
+                .map(s => s.name);
+
+            const traces = seasons.map(season => ({
+                x: stationOrder,
+                y: stationOrder.map(s => stationData[s][season] || 0),
+                name: season,
+                type: 'bar',
+                marker: { color: seasonColors[season] }
+            }));
+
+            const layout = {
+                barmode: 'group',
+                margin: { t: 20, r: 20, b: 120, l: 60 },
+                xaxis: { title: '', tickangle: -45 },
+                yaxis: { title: 'Seasonal Rainfall (mm)' },
+                legend: { x: 1, xanchor: 'right', y: 1 }
+            };
+
+            Plotly.newPlot('seasonal-chart', traces, layout, { responsive: true });
+        }
+
+        // Update comparison chart
+        async function updateComparison() {
+            const p1Start = document.getElementById('period1-start').value;
+            const p1End = document.getElementById('period1-end').value;
+            const p2Start = document.getElementById('period2-start').value;
+            const p2End = document.getElementById('period2-end').value;
+
+            const url = `/api/rainfall/comparison?period1_start=${p1Start}&period1_end=${p1End}&period2_start=${p2Start}&period2_end=${p2End}`;
+            const response = await fetch(url);
+            const data = await response.json();
+
+            // Sort by Period 2 rainfall (descending) for better visual grouping
+            data.sort((a, b) => b.period2_avg - a.period2_avg);
+
+            // Create side-by-side bars for actual rainfall values
+            const trace1 = {
+                x: data.map(d => d.station_name),
+                y: data.map(d => d.period1_avg),
+                name: `${p1Start}-${p1End}`,
+                type: 'bar',
+                marker: { color: '#94a3b8' },
+                hovertemplate: '<b>%{x}</b><br>' +
+                    `${p1Start}-${p1End}: %{y:.0f} mm/year<extra></extra>`
+            };
+
+            const trace2 = {
+                x: data.map(d => d.station_name),
+                y: data.map(d => d.period2_avg),
+                name: `${p2Start}-${p2End}`,
+                type: 'bar',
+                marker: {
+                    color: data.map(d => d.change_percent >= 0 ? '#22c55e' : '#ef4444')
+                },
+                hovertemplate: '<b>%{x}</b><br>' +
+                    `${p2Start}-${p2End}: %{y:.0f} mm/year<br>` +
+                    'Change: %{customdata:.1f}%<extra></extra>',
+                customdata: data.map(d => d.change_percent)
+            };
+
+            // Add annotations showing the percentage change above each pair
+            const annotations = data.map((d, i) => ({
+                x: d.station_name,
+                y: Math.max(d.period1_avg, d.period2_avg) + 40,
+                text: `${d.change_percent >= 0 ? '+' : ''}${d.change_percent.toFixed(1)}%`,
+                showarrow: false,
+                font: {
+                    size: 10,
+                    color: d.change_percent >= 0 ? '#16a34a' : '#dc2626'
+                }
+            }));
+
+            const layout = {
+                barmode: 'group',
+                margin: { t: 40, r: 20, b: 120, l: 70 },
+                xaxis: { title: '', tickangle: -45 },
+                yaxis: { title: 'Average Annual Rainfall (mm)' },
+                legend: {
+                    x: 0,
+                    y: 1.15,
+                    orientation: 'h',
+                    bgcolor: 'rgba(255,255,255,0.8)'
+                },
+                annotations: annotations
+            };
+
+            Plotly.newPlot('comparison-chart', [trace1, trace2], layout, { responsive: true });
+        }
+
+        // Event listeners
+        document.getElementById('station-select').addEventListener('change', updateTimeSeries);
+        document.getElementById('window-select').addEventListener('change', updateTimeSeries);
+
+        // Initialize dashboard
+        async function init() {
+            initMap();
+            await loadStations();
+            await loadStationSummary();
+            await updateTimeSeries();
+            await loadHeatmap();
+            await loadSeasonalChart();
+            await updateComparison();
+        }
+
+        // Start
+        init();
+    </script>
+</body>
+</html>

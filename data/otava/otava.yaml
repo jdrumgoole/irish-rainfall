@@ -1,0 +1,9 @@
+tests:
+  rainfall.national:
+    attributes:
+    - station
+    file: /Users/jdrumgoole/GIT/irish-rainfall/data/otava/rainfall_data.csv
+    metrics:
+    - annual_rainfall
+    time_column: time
+    type: csv
