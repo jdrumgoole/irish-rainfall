@@ -384,6 +384,12 @@
                         </select>
                     </div>
                     <div class="control-group">
+                        <label>Compare with:</label>
+                        <select id="station-compare">
+                            <option value="">None</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
                         <label>Moving Avg:</label>
                         <select id="window-select">
                             <option value="5">5 years</option>
@@ -580,11 +586,17 @@
             stations = await response.json();
 
             const select = document.getElementById('station-select');
+            const compareSelect = document.getElementById('station-compare');
+
             stations.forEach(station => {
                 const option = document.createElement('option');
                 option.value = station.id;
                 option.textContent = `${station.name} (${station.county || 'N/A'})`;
                 select.appendChild(option);
+
+                // Clone for comparison dropdown
+                const compareOption = option.cloneNode(true);
+                compareSelect.appendChild(compareOption);
             });
         }
 
@@ -617,14 +629,16 @@
         // Update time series chart
         async function updateTimeSeries() {
             const stationId = document.getElementById('station-select').value;
+            const compareId = document.getElementById('station-compare').value;
             const window = parseInt(document.getElementById('window-select').value);
 
+            // Build URLs for primary station
             let url = `/api/rainfall/annual?start_year=1850&end_year=2010`;
             if (stationId) {
                 url += `&station_id=${stationId}`;
             }
 
-            // Fetch rainfall data and change points in parallel
+            // Fetch primary station data and change points
             const [rainfallResponse, changepointsResponse] = await Promise.all([
                 fetch(url),
                 fetch(`/api/rainfall/changepoints${stationId ? `?station_id=${stationId}` : ''}`)
@@ -633,7 +647,12 @@
             const data = await rainfallResponse.json();
             const changepoints = await changepointsResponse.json();
 
-            // Calculate moving average
+            // Get station name for primary
+            const primaryName = stationId
+                ? stations.find(s => s.id == stationId)?.name || 'Station'
+                : 'National Average';
+
+            // Calculate moving average for primary station
             const years = data.map(d => d.year);
             const values = data.map(d => d.annual_total);
             const movingAvg = [];
@@ -653,7 +672,7 @@
                     y: values,
                     type: 'scatter',
                     mode: 'lines',
-                    name: 'Annual Rainfall',
+                    name: `${primaryName}`,
                     line: { color: '#93c5fd', width: 1 },
                     fill: 'tozeroy',
                     fillcolor: 'rgba(147, 197, 253, 0.3)'
@@ -663,12 +682,54 @@
                     y: movingAvg,
                     type: 'scatter',
                     mode: 'lines',
-                    name: `${window}-Year Moving Avg`,
+                    name: `${primaryName} (${window}yr avg)`,
                     line: { color: '#2563eb', width: 3 }
                 }
             ];
 
-            // Create vertical lines for change points
+            // If comparison station selected, fetch and add its data
+            if (compareId) {
+                const compareUrl = `/api/rainfall/annual?start_year=1850&end_year=2010&station_id=${compareId}`;
+                const compareResponse = await fetch(compareUrl);
+                const compareData = await compareResponse.json();
+
+                const compareName = stations.find(s => s.id == compareId)?.name || 'Comparison';
+
+                const compareYears = compareData.map(d => d.year);
+                const compareValues = compareData.map(d => d.annual_total);
+                const compareMovingAvg = [];
+
+                for (let i = 0; i < compareValues.length; i++) {
+                    if (i >= window - 1) {
+                        const slice = compareValues.slice(i - window + 1, i + 1);
+                        compareMovingAvg.push(slice.reduce((a, b) => a + b, 0) / slice.length);
+                    } else {
+                        compareMovingAvg.push(null);
+                    }
+                }
+
+                traces.push({
+                    x: compareYears,
+                    y: compareValues,
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: `${compareName}`,
+                    line: { color: '#fdba74', width: 1 },
+                    fill: 'tozeroy',
+                    fillcolor: 'rgba(253, 186, 116, 0.2)'
+                });
+
+                traces.push({
+                    x: compareYears,
+                    y: compareMovingAvg,
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: `${compareName} (${window}yr avg)`,
+                    line: { color: '#ea580c', width: 3 }
+                });
+            }
+
+            // Create vertical lines for change points (primary station only)
             const shapes = changepoints.map(cp => ({
                 type: 'line',
                 x0: cp.year,
@@ -716,7 +777,7 @@
                 margin: { t: 30, r: 20, b: 50, l: 60 },
                 xaxis: { title: 'Year' },
                 yaxis: { title: 'Rainfall (mm)', range: [0, 2500] },
-                legend: { x: 0.5, xanchor: 'center', y: 1.12, orientation: 'h' },
+                legend: { x: 0.5, xanchor: 'center', y: 1.15, orientation: 'h' },
                 hovermode: 'x unified',
                 shapes: shapes,
                 annotations: annotations
@@ -909,6 +970,7 @@
             highlightStation(stationId ? parseInt(stationId) : null);
             updateTimeSeries();
         });
+        document.getElementById('station-compare').addEventListener('change', updateTimeSeries);
         document.getElementById('window-select').addEventListener('change', updateTimeSeries);
 
         // Initialize dashboard
