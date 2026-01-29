@@ -1,6 +1,6 @@
 [project]
 name = "irish-rainfall"
-version = "0.2.0"
+version = "0.3.0"
 description = "Analysis tools for the Long-term Island of Ireland Precipitation (IIP) network dataset (1850-2010)"
 readme = "README.md"
 requires-python = ">=3.12"
