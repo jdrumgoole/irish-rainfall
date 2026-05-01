@@ -49,7 +49,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="Irish Rainfall Dashboard",
     description="Visualization of 160 years of Irish precipitation data (1850-2010)",
-    version="0.1.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
