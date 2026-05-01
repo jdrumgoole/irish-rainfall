@@ -102,6 +102,7 @@
 
         .card-body {
             padding: 1rem;
+            position: relative;
         }
 
         #map {
@@ -113,6 +114,69 @@
         #timeseries-chart, #heatmap-chart, #trend-chart, #comparison-chart {
             width: 100%;
             height: 400px;
+        }
+
+        .chart-loading {
+            position: absolute;
+            inset: 1rem;
+            background: rgba(255, 255, 255, 0.78);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 0.75rem;
+            z-index: 1000;
+            border-radius: 8px;
+            backdrop-filter: blur(2px);
+            -webkit-backdrop-filter: blur(2px);
+            opacity: 1;
+            transition: opacity 0.2s ease-out;
+            pointer-events: all;
+        }
+
+        .chart-loading.hiding {
+            opacity: 0;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(37, 99, 235, 0.18);
+            border-top-color: var(--primary-color);
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading-label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+            letter-spacing: 0.01em;
+        }
+
+        .chart-error {
+            position: absolute;
+            inset: 1rem;
+            background: rgba(254, 242, 242, 0.95);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            z-index: 1000;
+            border-radius: 8px;
+            color: #b91c1c;
+            font-size: 0.9rem;
+        }
+
+        .chart-error button {
+            margin-top: 0.5rem;
+            padding: 0.4rem 0.9rem;
+            background: #b91c1c;
         }
 
         .controls {
@@ -484,6 +548,71 @@
         let markerMap = {};  // Map station ID to marker
         let highlightedMarker = null;
 
+        // ----- Loading-overlay helpers -------------------------------------
+        // Each chart's parent .card-body is position: relative, so an
+        // absolutely-positioned overlay covers it while a query is in flight.
+
+        function _overlayHost(elementId) {
+            const el = document.getElementById(elementId);
+            return el ? el.closest('.card-body') || el.parentElement : null;
+        }
+
+        function setLoading(elementId, isLoading, label = 'Loading…') {
+            const host = _overlayHost(elementId);
+            if (!host) return;
+            let overlay = host.querySelector(':scope > .chart-loading');
+
+            if (isLoading) {
+                if (!overlay) {
+                    overlay = document.createElement('div');
+                    overlay.className = 'chart-loading';
+                    overlay.innerHTML =
+                        '<div class="spinner" role="status" aria-label="Loading"></div>' +
+                        '<div class="loading-label"></div>';
+                    host.appendChild(overlay);
+                }
+                overlay.classList.remove('hiding');
+                overlay.querySelector('.loading-label').textContent = label;
+                // Drop any prior error overlay
+                host.querySelectorAll(':scope > .chart-error').forEach(n => n.remove());
+            } else if (overlay) {
+                overlay.classList.add('hiding');
+                setTimeout(() => overlay.remove(), 220);
+            }
+        }
+
+        function showError(elementId, message, retryFn) {
+            const host = _overlayHost(elementId);
+            if (!host) return;
+            host.querySelectorAll(':scope > .chart-loading, :scope > .chart-error')
+                .forEach(n => n.remove());
+            const err = document.createElement('div');
+            err.className = 'chart-error';
+            err.innerHTML =
+                '<div>⚠ ' + (message || 'Failed to load') + '</div>';
+            if (retryFn) {
+                const btn = document.createElement('button');
+                btn.textContent = 'Retry';
+                btn.onclick = () => { err.remove(); retryFn(); };
+                err.appendChild(btn);
+            }
+            host.appendChild(err);
+        }
+
+        async function withLoading(elementId, label, fn) {
+            setLoading(elementId, true, label);
+            try {
+                const result = await fn();
+                setLoading(elementId, false);
+                return result;
+            } catch (e) {
+                console.error('[' + elementId + ']', e);
+                showError(elementId, e.message || 'Request failed', () =>
+                    withLoading(elementId, label, fn));
+                throw e;
+            }
+        }
+
         // Color scale for rainfall
         function getRainfallColor(rainfall) {
             if (rainfall < 900) return '#22c55e';
@@ -609,11 +738,13 @@
 
         // Fetch station summary for map
         async function loadStationSummary() {
-            const response = await fetch('/api/rainfall/station-summary');
-            stationSummary = await response.json();
-
-            addStationMarkers();
-            updateStats();
+            return withLoading('map', 'Loading station data…', async () => {
+                const response = await fetch('/api/rainfall/station-summary');
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                stationSummary = await response.json();
+                addStationMarkers();
+                updateStats();
+            });
         }
 
         // Update stats cards
@@ -635,6 +766,11 @@
 
         // Update time series chart
         async function updateTimeSeries() {
+            return withLoading('timeseries-chart', 'Loading time series…', () =>
+                _renderTimeSeries());
+        }
+
+        async function _renderTimeSeries() {
             const stationId = document.getElementById('station-select').value;
             const compareId = document.getElementById('station-compare').value;
             const window = parseInt(document.getElementById('window-select').value);
@@ -650,6 +786,8 @@
                 fetch(url),
                 fetch(`/api/rainfall/changepoints${stationId ? `?station_id=${stationId}` : ''}`)
             ]);
+            if (!rainfallResponse.ok) throw new Error('HTTP ' + rainfallResponse.status);
+            if (!changepointsResponse.ok) throw new Error('HTTP ' + changepointsResponse.status);
 
             const data = await rainfallResponse.json();
             const changepoints = await changepointsResponse.json();
@@ -795,7 +933,13 @@
 
         // Load and display heatmap
         async function loadHeatmap() {
+            return withLoading('heatmap-chart', 'Loading climatology…', () =>
+                _renderHeatmap());
+        }
+
+        async function _renderHeatmap() {
             const response = await fetch('/api/rainfall/climatology');
+            if (!response.ok) throw new Error('HTTP ' + response.status);
             const data = await response.json();
 
             // Get unique stations and sort by total rainfall
@@ -855,7 +999,13 @@
 
         // Load seasonal chart
         async function loadSeasonalChart() {
+            return withLoading('seasonal-chart', 'Loading seasonal data…', () =>
+                _renderSeasonalChart());
+        }
+
+        async function _renderSeasonalChart() {
             const response = await fetch('/api/rainfall/seasonal');
+            if (!response.ok) throw new Error('HTTP ' + response.status);
             const data = await response.json();
 
             // Group by station
@@ -905,6 +1055,11 @@
 
         // Update comparison chart
         async function updateComparison() {
+            return withLoading('comparison-chart', 'Comparing periods…', () =>
+                _renderComparison());
+        }
+
+        async function _renderComparison() {
             const p1Start = document.getElementById('period1-start').value;
             const p1End = document.getElementById('period1-end').value;
             const p2Start = document.getElementById('period2-start').value;
@@ -912,6 +1067,7 @@
 
             const url = `/api/rainfall/comparison?period1_start=${p1Start}&period1_end=${p1End}&period2_start=${p2Start}&period2_end=${p2End}`;
             const response = await fetch(url);
+            if (!response.ok) throw new Error('HTTP ' + response.status);
             const data = await response.json();
 
             // Sort by Period 2 rainfall (descending) for better visual grouping
@@ -983,12 +1139,15 @@
         // Initialize dashboard
         async function init() {
             initMap();
-            await loadStations();
-            await loadStationSummary();
-            await updateTimeSeries();
-            await loadHeatmap();
-            await loadSeasonalChart();
-            await updateComparison();
+            await loadStations();  // others depend on the `stations` global
+            // Fire all chart loads in parallel so every spinner lights up at once
+            await Promise.allSettled([
+                loadStationSummary(),
+                updateTimeSeries(),
+                loadHeatmap(),
+                loadSeasonalChart(),
+                updateComparison(),
+            ]);
         }
 
         // Start

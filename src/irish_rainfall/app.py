@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+import time
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
@@ -15,6 +17,23 @@ from fastapi.templating import Jinja2Templates
 
 from irish_rainfall.database import DEFAULT_DB_PATH, create_tables, get_connection
 
+logger = logging.getLogger("uvicorn.error")
+
+
+def _warm_cache() -> None:
+    """Pre-populate lru_cache for the queries the dashboard fires on first load."""
+    db = str(DEFAULT_DB_PATH)
+    t0 = time.perf_counter()
+    _stations(db)
+    _annual_national(db, 1850, 2010)
+    _climatology(db, 1850, 2010)
+    _seasonal(db, 1850, 2010)
+    _station_summary(db, 1850, 2010)
+    _comparison(db, 1850, 1900, 1960, 2010)
+    _trends(db, 10)
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    logger.info("Warmed query cache in %.1f ms", elapsed_ms)
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -23,6 +42,7 @@ async def lifespan(_: FastAPI):
         create_tables(conn)
     finally:
         conn.close()
+    _warm_cache()
     yield
 
 
