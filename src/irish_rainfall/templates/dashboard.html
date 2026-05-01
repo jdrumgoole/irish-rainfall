@@ -780,14 +780,22 @@
             if (stationId) {
                 url += `&station_id=${stationId}`;
             }
+            const compareUrl = compareId
+                ? `/api/rainfall/annual?start_year=1850&end_year=2010&station_id=${compareId}`
+                : null;
 
-            // Fetch primary station data and change points
-            const [rainfallResponse, changepointsResponse] = await Promise.all([
+            // Fetch primary, changepoints, and (optional) comparison in one round-trip
+            const requests = [
                 fetch(url),
-                fetch(`/api/rainfall/changepoints${stationId ? `?station_id=${stationId}` : ''}`)
-            ]);
-            if (!rainfallResponse.ok) throw new Error('HTTP ' + rainfallResponse.status);
-            if (!changepointsResponse.ok) throw new Error('HTTP ' + changepointsResponse.status);
+                fetch(`/api/rainfall/changepoints${stationId ? `?station_id=${stationId}` : ''}`),
+            ];
+            if (compareUrl) requests.push(fetch(compareUrl));
+
+            const responses = await Promise.all(requests);
+            for (const r of responses) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+            }
+            const [rainfallResponse, changepointsResponse, compareResponse] = responses;
 
             const data = await rainfallResponse.json();
             const changepoints = await changepointsResponse.json();
@@ -832,10 +840,8 @@
                 }
             ];
 
-            // If comparison station selected, fetch and add its data
+            // If comparison station selected, splice its data in (already fetched in parallel above)
             if (compareId) {
-                const compareUrl = `/api/rainfall/annual?start_year=1850&end_year=2010&station_id=${compareId}`;
-                const compareResponse = await fetch(compareUrl);
                 const compareData = await compareResponse.json();
 
                 const compareName = stations.find(s => s.id == compareId)?.name || 'Comparison';

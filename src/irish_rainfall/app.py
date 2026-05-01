@@ -21,7 +21,11 @@ logger = logging.getLogger("uvicorn.error")
 
 
 def _warm_cache() -> None:
-    """Pre-populate lru_cache for the queries the dashboard fires on first load."""
+    """Pre-populate lru_cache for the queries the dashboard fires on first load.
+
+    Also pre-computes per-station annual totals and changepoints, so switching
+    stations in the dashboard is served from cache rather than re-running PELT.
+    """
     db = str(DEFAULT_DB_PATH)
     t0 = time.perf_counter()
     _stations(db)
@@ -31,6 +35,17 @@ def _warm_cache() -> None:
     _station_summary(db, 1850, 2010)
     _comparison(db, 1850, 1900, 1960, 2010)
     _trends(db, 10)
+
+    # National-average changepoints are loaded on first dashboard render.
+    _changepoints(db, None, 3.0)
+
+    # Per-station: annual totals + changepoints for every station the dropdown
+    # exposes, so the time-series chart switches without a backend round-trip.
+    for station in _stations(db):
+        sid = station["id"]
+        _annual_one_station(db, sid, 1850, 2010)
+        _changepoints(db, sid, 3.0)
+
     elapsed_ms = (time.perf_counter() - t0) * 1000
     logger.info("Warmed query cache in %.1f ms", elapsed_ms)
 
@@ -508,6 +523,24 @@ async def get_period_comparison(
     ))
 
 
+@lru_cache(maxsize=128)
+def _changepoints(
+    db_path: str, station_id: Optional[int], penalty: float
+) -> tuple[dict[str, Any], ...]:
+    from irish_rainfall.changepoint import (
+        detect_changepoints_ruptures,
+        get_annual_rainfall_data,
+    )
+
+    years, values, station_name = get_annual_rainfall_data(Path(db_path), station_id)
+    if len(values) < 20:
+        return ()
+    changepoints = detect_changepoints_ruptures(values, years, penalty=penalty)
+    for cp in changepoints:
+        cp["station_name"] = station_name
+    return tuple(changepoints)
+
+
 @app.get("/api/rainfall/changepoints")
 async def get_changepoints(
     station_id: Optional[int] = Query(None, description="Station ID (None for national average)"),
@@ -517,16 +550,4 @@ async def get_changepoints(
 
     Returns statistically significant shifts in rainfall patterns.
     """
-    from irish_rainfall.changepoint import detect_changepoints_ruptures, get_annual_rainfall_data
-
-    years, values, station_name = get_annual_rainfall_data(None, station_id)
-
-    if len(values) < 20:
-        return []
-
-    changepoints = detect_changepoints_ruptures(values, years, penalty=penalty)
-
-    for cp in changepoints:
-        cp["station_name"] = station_name
-
-    return changepoints
+    return list(_changepoints(str(DEFAULT_DB_PATH), station_id, penalty))
