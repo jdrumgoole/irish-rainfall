@@ -1,27 +1,41 @@
 """FastAPI application for Irish Rainfall data visualization."""
 
+from __future__ import annotations
+
 import sqlite3
+from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from irish_rainfall.database import DEFAULT_DB_PATH
+from irish_rainfall.database import DEFAULT_DB_PATH, create_tables, get_connection
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    conn = get_connection(DEFAULT_DB_PATH)
+    try:
+        create_tables(conn)
+    finally:
+        conn.close()
+    yield
+
 
 app = FastAPI(
     title="Irish Rainfall Dashboard",
     description="Visualization of 160 years of Irish precipitation data (1850-2010)",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
-# Set up templates
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
 
-# Create directories if they don't exist
 TEMPLATES_DIR.mkdir(exist_ok=True)
 STATIC_DIR.mkdir(exist_ok=True)
 
@@ -29,11 +43,342 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
-def get_db_connection() -> sqlite3.Connection:
-    """Get a database connection."""
-    conn = sqlite3.connect(DEFAULT_DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def _conn() -> sqlite3.Connection:
+    return get_connection(DEFAULT_DB_PATH)
+
+
+def _rows(cursor: sqlite3.Cursor) -> tuple[dict[str, Any], ...]:
+    return tuple(dict(row) for row in cursor.fetchall())
+
+
+# ---------------------------------------------------------------------------
+# Cached query layer
+#
+# The IIP dataset ends in 2010 and never changes during a server's lifetime,
+# so every query function below is memoised by (db_path, *params). Returning
+# tuples means callers cannot accidentally mutate the cache. Endpoints copy
+# to list before applying any mutation (only `trends` does so).
+# ---------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=4)
+def _stations(db_path: str) -> tuple[dict[str, Any], ...]:
+    conn = _conn()
+    try:
+        return _rows(conn.execute("""
+            SELECT id, name, county, latitude, longitude, elevation_metres,
+                   easting, northing
+            FROM stations
+            ORDER BY name
+        """))
+    finally:
+        conn.close()
+
+
+@lru_cache(maxsize=64)
+def _station(db_path: str, station_id: int) -> Optional[dict[str, Any]]:
+    conn = _conn()
+    try:
+        row = conn.execute("""
+            SELECT id, name, county, latitude, longitude, elevation_metres,
+                   easting, northing
+            FROM stations
+            WHERE id = ?
+        """, (station_id,)).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
+@lru_cache(maxsize=128)
+def _annual_one_station(
+    db_path: str, station_id: int, start_year: int, end_year: int
+) -> tuple[dict[str, Any], ...]:
+    conn = _conn()
+    try:
+        return _rows(conn.execute("""
+            SELECT s.name AS station_name, r.year,
+                   SUM(r.amount_mm) AS annual_total
+            FROM rainfall r
+            JOIN stations s ON r.station_id = s.id
+            WHERE r.station_id = ? AND r.year BETWEEN ? AND ?
+            GROUP BY r.station_id, r.year
+            ORDER BY r.year
+        """, (station_id, start_year, end_year)))
+    finally:
+        conn.close()
+
+
+@lru_cache(maxsize=64)
+def _annual_national(
+    db_path: str, start_year: int, end_year: int
+) -> tuple[dict[str, Any], ...]:
+    conn = _conn()
+    try:
+        return _rows(conn.execute("""
+            SELECT 'National Average' AS station_name, year,
+                   AVG(annual_total) AS annual_total
+            FROM (
+                SELECT station_id, year, SUM(amount_mm) AS annual_total
+                FROM rainfall
+                WHERE year BETWEEN ? AND ?
+                GROUP BY station_id, year
+            )
+            GROUP BY year
+            ORDER BY year
+        """, (start_year, end_year)))
+    finally:
+        conn.close()
+
+
+@lru_cache(maxsize=128)
+def _monthly_one_station_year(
+    db_path: str, station_id: int, year: int
+) -> tuple[dict[str, Any], ...]:
+    conn = _conn()
+    try:
+        return _rows(conn.execute("""
+            SELECT s.name AS station_name, r.year, r.month, r.amount_mm
+            FROM rainfall r
+            JOIN stations s ON r.station_id = s.id
+            WHERE r.station_id = ? AND r.year = ?
+            ORDER BY r.month
+        """, (station_id, year)))
+    finally:
+        conn.close()
+
+
+@lru_cache(maxsize=128)
+def _monthly_one_station(
+    db_path: str, station_id: int, start_year: int, end_year: int
+) -> tuple[dict[str, Any], ...]:
+    conn = _conn()
+    try:
+        return _rows(conn.execute("""
+            SELECT s.name AS station_name, r.year, r.month, r.amount_mm
+            FROM rainfall r
+            JOIN stations s ON r.station_id = s.id
+            WHERE r.station_id = ? AND r.year BETWEEN ? AND ?
+            ORDER BY r.year, r.month
+        """, (station_id, start_year, end_year)))
+    finally:
+        conn.close()
+
+
+@lru_cache(maxsize=64)
+def _monthly_national(
+    db_path: str, start_year: int, end_year: int
+) -> tuple[dict[str, Any], ...]:
+    conn = _conn()
+    try:
+        return _rows(conn.execute("""
+            SELECT 'National Average' AS station_name, year, month,
+                   AVG(amount_mm) AS amount_mm
+            FROM rainfall
+            WHERE year BETWEEN ? AND ?
+            GROUP BY year, month
+            ORDER BY year, month
+        """, (start_year, end_year)))
+    finally:
+        conn.close()
+
+
+@lru_cache(maxsize=64)
+def _seasonal(
+    db_path: str, start_year: int, end_year: int
+) -> tuple[dict[str, Any], ...]:
+    conn = _conn()
+    try:
+        return _rows(conn.execute("""
+            WITH agg AS (
+                SELECT station_id,
+                       CASE
+                           WHEN month IN (12, 1, 2)  THEN 'Winter'
+                           WHEN month IN (3, 4, 5)   THEN 'Spring'
+                           WHEN month IN (6, 7, 8)   THEN 'Summer'
+                           WHEN month IN (9, 10, 11) THEN 'Autumn'
+                       END AS season,
+                       AVG(amount_mm) AS avg_monthly_rainfall
+                FROM rainfall
+                WHERE year BETWEEN ? AND ?
+                GROUP BY station_id, season
+            )
+            SELECT s.name AS station_name,
+                   s.id   AS station_id,
+                   agg.season,
+                   agg.avg_monthly_rainfall
+            FROM agg
+            JOIN stations s ON s.id = agg.station_id
+            ORDER BY s.name,
+                CASE agg.season
+                    WHEN 'Winter' THEN 1
+                    WHEN 'Spring' THEN 2
+                    WHEN 'Summer' THEN 3
+                    WHEN 'Autumn' THEN 4
+                END
+        """, (start_year, end_year)))
+    finally:
+        conn.close()
+
+
+@lru_cache(maxsize=64)
+def _climatology(
+    db_path: str, start_year: int, end_year: int
+) -> tuple[dict[str, Any], ...]:
+    conn = _conn()
+    try:
+        return _rows(conn.execute("""
+            WITH agg AS (
+                SELECT station_id, month, AVG(amount_mm) AS avg_rainfall
+                FROM rainfall
+                WHERE year BETWEEN ? AND ?
+                GROUP BY station_id, month
+            )
+            SELECT s.name AS station_name,
+                   s.id   AS station_id,
+                   agg.month,
+                   agg.avg_rainfall
+            FROM agg
+            JOIN stations s ON s.id = agg.station_id
+            ORDER BY s.name, agg.month
+        """, (start_year, end_year)))
+    finally:
+        conn.close()
+
+
+@lru_cache(maxsize=64)
+def _station_summary(
+    db_path: str, start_year: int, end_year: int
+) -> tuple[dict[str, Any], ...]:
+    conn = _conn()
+    try:
+        return _rows(conn.execute("""
+            SELECT s.id, s.name, s.county, s.latitude, s.longitude,
+                   s.elevation_metres,
+                   AVG(annual.total) AS avg_annual_rainfall,
+                   MIN(annual.total) AS min_annual_rainfall,
+                   MAX(annual.total) AS max_annual_rainfall,
+                   COUNT(DISTINCT annual.year) AS years_of_data
+            FROM stations s
+            JOIN (
+                SELECT station_id, year, SUM(amount_mm) AS total
+                FROM rainfall
+                WHERE year BETWEEN ? AND ?
+                GROUP BY station_id, year
+            ) annual ON s.id = annual.station_id
+            GROUP BY s.id
+            ORDER BY avg_annual_rainfall DESC
+        """, (start_year, end_year)))
+    finally:
+        conn.close()
+
+
+@lru_cache(maxsize=64)
+def _trends(db_path: str, window: int) -> tuple[dict[str, Any], ...]:
+    conn = _conn()
+    try:
+        rows = [dict(r) for r in conn.execute("""
+            SELECT year, AVG(annual_total) AS national_avg
+            FROM (
+                SELECT station_id, year, SUM(amount_mm) AS annual_total
+                FROM rainfall
+                GROUP BY station_id, year
+            )
+            GROUP BY year
+            ORDER BY year
+        """).fetchall()]
+    finally:
+        conn.close()
+
+    for i, row in enumerate(rows):
+        if i >= window - 1:
+            slice_ = [rows[j]["national_avg"] for j in range(i - window + 1, i + 1)]
+            row["moving_avg"] = sum(slice_) / window
+        else:
+            row["moving_avg"] = None
+    return tuple(rows)
+
+
+@lru_cache(maxsize=32)
+def _anomalies(
+    db_path: str, baseline_start: int, baseline_end: int
+) -> tuple[dict[str, Any], ...]:
+    conn = _conn()
+    try:
+        return _rows(conn.execute("""
+            WITH baseline AS (
+                SELECT station_id, AVG(annual_total) AS baseline_avg
+                FROM (
+                    SELECT station_id, year, SUM(amount_mm) AS annual_total
+                    FROM rainfall
+                    WHERE year BETWEEN ? AND ?
+                    GROUP BY station_id, year
+                )
+                GROUP BY station_id
+            ),
+            annual AS (
+                SELECT station_id, year, SUM(amount_mm) AS annual_total
+                FROM rainfall
+                GROUP BY station_id, year
+            )
+            SELECT s.name AS station_name,
+                   a.year,
+                   a.annual_total,
+                   b.baseline_avg,
+                   (a.annual_total - b.baseline_avg) AS anomaly,
+                   ((a.annual_total - b.baseline_avg) / b.baseline_avg * 100)
+                       AS anomaly_percent
+            FROM annual a
+            JOIN stations s  ON a.station_id = s.id
+            JOIN baseline b  ON a.station_id = b.station_id
+            ORDER BY a.year, s.name
+        """, (baseline_start, baseline_end)))
+    finally:
+        conn.close()
+
+
+@lru_cache(maxsize=32)
+def _comparison(
+    db_path: str,
+    p1_start: int, p1_end: int,
+    p2_start: int, p2_end: int,
+) -> tuple[dict[str, Any], ...]:
+    """Single-pass conditional aggregation: rainfall is scanned once instead of twice."""
+    conn = _conn()
+    try:
+        return _rows(conn.execute("""
+            WITH annual AS (
+                SELECT station_id, year, SUM(amount_mm) AS total
+                FROM rainfall
+                WHERE (year BETWEEN :p1s AND :p1e)
+                   OR (year BETWEEN :p2s AND :p2e)
+                GROUP BY station_id, year
+            ),
+            agg AS (
+                SELECT station_id,
+                       AVG(CASE WHEN year BETWEEN :p1s AND :p1e THEN total END) AS p1,
+                       AVG(CASE WHEN year BETWEEN :p2s AND :p2e THEN total END) AS p2
+                FROM annual
+                GROUP BY station_id
+            )
+            SELECT s.name AS station_name,
+                   s.latitude, s.longitude,
+                   agg.p1 AS period1_avg,
+                   agg.p2 AS period2_avg,
+                   (agg.p2 - agg.p1) AS change,
+                   ((agg.p2 - agg.p1) / agg.p1 * 100) AS change_percent
+            FROM stations s
+            JOIN agg ON s.id = agg.station_id
+            WHERE agg.p1 IS NOT NULL AND agg.p2 IS NOT NULL
+            ORDER BY change_percent DESC
+        """, {"p1s": p1_start, "p1e": p1_end, "p2s": p2_start, "p2e": p2_end}))
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -45,33 +390,14 @@ async def dashboard(request: Request) -> HTMLResponse:
 @app.get("/api/stations")
 async def get_stations() -> list[dict]:
     """Get all weather stations with their metadata."""
-    conn = get_db_connection()
-    cursor = conn.execute("""
-        SELECT id, name, county, latitude, longitude, elevation_metres,
-               easting, northing
-        FROM stations
-        ORDER BY name
-    """)
-    stations = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return stations
+    return list(_stations(str(DEFAULT_DB_PATH)))
 
 
 @app.get("/api/stations/{station_id}")
 async def get_station(station_id: int) -> dict:
     """Get a single station by ID."""
-    conn = get_db_connection()
-    cursor = conn.execute("""
-        SELECT id, name, county, latitude, longitude, elevation_metres,
-               easting, northing
-        FROM stations
-        WHERE id = ?
-    """, (station_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if row:
-        return dict(row)
-    return {"error": "Station not found"}
+    row = _station(str(DEFAULT_DB_PATH), station_id)
+    return row if row else {"error": "Station not found"}
 
 
 @app.get("/api/rainfall/annual")
@@ -81,35 +407,10 @@ async def get_annual_rainfall(
     end_year: int = Query(2010, description="End year"),
 ) -> list[dict]:
     """Get annual rainfall totals."""
-    conn = get_db_connection()
-
+    db = str(DEFAULT_DB_PATH)
     if station_id:
-        cursor = conn.execute("""
-            SELECT s.name as station_name, r.year, SUM(r.amount_mm) as annual_total
-            FROM rainfall r
-            JOIN stations s ON r.station_id = s.id
-            WHERE r.station_id = ? AND r.year BETWEEN ? AND ?
-            GROUP BY r.station_id, r.year
-            ORDER BY r.year
-        """, (station_id, start_year, end_year))
-    else:
-        # National average (average of all stations per year)
-        cursor = conn.execute("""
-            SELECT 'National Average' as station_name, year,
-                   AVG(annual_total) as annual_total
-            FROM (
-                SELECT station_id, year, SUM(amount_mm) as annual_total
-                FROM rainfall
-                WHERE year BETWEEN ? AND ?
-                GROUP BY station_id, year
-            )
-            GROUP BY year
-            ORDER BY year
-        """, (start_year, end_year))
-
-    results = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return results
+        return list(_annual_one_station(db, station_id, start_year, end_year))
+    return list(_annual_national(db, start_year, end_year))
 
 
 @app.get("/api/rainfall/monthly")
@@ -120,38 +421,12 @@ async def get_monthly_rainfall(
     end_year: int = Query(2010, description="End year"),
 ) -> list[dict]:
     """Get monthly rainfall data."""
-    conn = get_db_connection()
-
+    db = str(DEFAULT_DB_PATH)
     if station_id and year:
-        cursor = conn.execute("""
-            SELECT s.name as station_name, r.year, r.month, r.amount_mm
-            FROM rainfall r
-            JOIN stations s ON r.station_id = s.id
-            WHERE r.station_id = ? AND r.year = ?
-            ORDER BY r.month
-        """, (station_id, year))
-    elif station_id:
-        cursor = conn.execute("""
-            SELECT s.name as station_name, r.year, r.month, r.amount_mm
-            FROM rainfall r
-            JOIN stations s ON r.station_id = s.id
-            WHERE r.station_id = ? AND r.year BETWEEN ? AND ?
-            ORDER BY r.year, r.month
-        """, (station_id, start_year, end_year))
-    else:
-        # National monthly average
-        cursor = conn.execute("""
-            SELECT 'National Average' as station_name, year, month,
-                   AVG(amount_mm) as amount_mm
-            FROM rainfall
-            WHERE year BETWEEN ? AND ?
-            GROUP BY year, month
-            ORDER BY year, month
-        """, (start_year, end_year))
-
-    results = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return results
+        return list(_monthly_one_station_year(db, station_id, year))
+    if station_id:
+        return list(_monthly_one_station(db, station_id, start_year, end_year))
+    return list(_monthly_national(db, start_year, end_year))
 
 
 @app.get("/api/rainfall/seasonal")
@@ -160,36 +435,7 @@ async def get_seasonal_rainfall(
     end_year: int = Query(2010, description="End year"),
 ) -> list[dict]:
     """Get seasonal rainfall averages by station."""
-    conn = get_db_connection()
-
-    # Seasons: Winter (DJF), Spring (MAM), Summer (JJA), Autumn (SON)
-    cursor = conn.execute("""
-        SELECT
-            s.name as station_name,
-            s.id as station_id,
-            CASE
-                WHEN r.month IN (12, 1, 2) THEN 'Winter'
-                WHEN r.month IN (3, 4, 5) THEN 'Spring'
-                WHEN r.month IN (6, 7, 8) THEN 'Summer'
-                WHEN r.month IN (9, 10, 11) THEN 'Autumn'
-            END as season,
-            AVG(r.amount_mm) as avg_monthly_rainfall
-        FROM rainfall r
-        JOIN stations s ON r.station_id = s.id
-        WHERE r.year BETWEEN ? AND ?
-        GROUP BY s.id, season
-        ORDER BY s.name,
-            CASE season
-                WHEN 'Winter' THEN 1
-                WHEN 'Spring' THEN 2
-                WHEN 'Summer' THEN 3
-                WHEN 'Autumn' THEN 4
-            END
-    """, (start_year, end_year))
-
-    results = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return results
+    return list(_seasonal(str(DEFAULT_DB_PATH), start_year, end_year))
 
 
 @app.get("/api/rainfall/climatology")
@@ -198,56 +444,16 @@ async def get_climatology(
     end_year: int = Query(2010, description="End year"),
 ) -> list[dict]:
     """Get monthly climatology (average by month) for all stations."""
-    conn = get_db_connection()
-
-    cursor = conn.execute("""
-        SELECT
-            s.name as station_name,
-            s.id as station_id,
-            r.month,
-            AVG(r.amount_mm) as avg_rainfall
-        FROM rainfall r
-        JOIN stations s ON r.station_id = s.id
-        WHERE r.year BETWEEN ? AND ?
-        GROUP BY s.id, r.month
-        ORDER BY s.name, r.month
-    """, (start_year, end_year))
-
-    results = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return results
+    return list(_climatology(str(DEFAULT_DB_PATH), start_year, end_year))
 
 
 @app.get("/api/rainfall/station-summary")
-async def get_station_summary() -> list[dict]:
-    """Get summary statistics for each station."""
-    conn = get_db_connection()
-
-    cursor = conn.execute("""
-        SELECT
-            s.id,
-            s.name,
-            s.county,
-            s.latitude,
-            s.longitude,
-            s.elevation_metres,
-            AVG(annual.total) as avg_annual_rainfall,
-            MIN(annual.total) as min_annual_rainfall,
-            MAX(annual.total) as max_annual_rainfall,
-            COUNT(DISTINCT annual.year) as years_of_data
-        FROM stations s
-        JOIN (
-            SELECT station_id, year, SUM(amount_mm) as total
-            FROM rainfall
-            GROUP BY station_id, year
-        ) annual ON s.id = annual.station_id
-        GROUP BY s.id
-        ORDER BY avg_annual_rainfall DESC
-    """)
-
-    results = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return results
+async def get_station_summary(
+    start_year: int = Query(1850, description="Start year"),
+    end_year: int = Query(2010, description="End year"),
+) -> list[dict]:
+    """Get summary statistics for each station over a year range."""
+    return list(_station_summary(str(DEFAULT_DB_PATH), start_year, end_year))
 
 
 @app.get("/api/rainfall/trends")
@@ -255,32 +461,7 @@ async def get_trends(
     window: int = Query(10, description="Moving average window in years"),
 ) -> list[dict]:
     """Get rainfall trends with moving average."""
-    conn = get_db_connection()
-
-    # Get annual totals for national average
-    cursor = conn.execute("""
-        SELECT year, AVG(annual_total) as national_avg
-        FROM (
-            SELECT station_id, year, SUM(amount_mm) as annual_total
-            FROM rainfall
-            GROUP BY station_id, year
-        )
-        GROUP BY year
-        ORDER BY year
-    """)
-
-    data = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-
-    # Calculate moving average
-    for i, row in enumerate(data):
-        if i >= window - 1:
-            values = [data[j]["national_avg"] for j in range(i - window + 1, i + 1)]
-            row["moving_avg"] = sum(values) / len(values)
-        else:
-            row["moving_avg"] = None
-
-    return data
+    return [dict(r) for r in _trends(str(DEFAULT_DB_PATH), window)]
 
 
 @app.get("/api/rainfall/anomalies")
@@ -289,41 +470,7 @@ async def get_anomalies(
     baseline_end: int = Query(1990, description="Baseline period end"),
 ) -> list[dict]:
     """Get rainfall anomalies relative to a baseline period."""
-    conn = get_db_connection()
-
-    # Calculate baseline averages per station
-    cursor = conn.execute("""
-        WITH baseline AS (
-            SELECT station_id, AVG(annual_total) as baseline_avg
-            FROM (
-                SELECT station_id, year, SUM(amount_mm) as annual_total
-                FROM rainfall
-                WHERE year BETWEEN ? AND ?
-                GROUP BY station_id, year
-            )
-            GROUP BY station_id
-        ),
-        annual AS (
-            SELECT station_id, year, SUM(amount_mm) as annual_total
-            FROM rainfall
-            GROUP BY station_id, year
-        )
-        SELECT
-            s.name as station_name,
-            a.year,
-            a.annual_total,
-            b.baseline_avg,
-            (a.annual_total - b.baseline_avg) as anomaly,
-            ((a.annual_total - b.baseline_avg) / b.baseline_avg * 100) as anomaly_percent
-        FROM annual a
-        JOIN stations s ON a.station_id = s.id
-        JOIN baseline b ON a.station_id = b.station_id
-        ORDER BY a.year, s.name
-    """, (baseline_start, baseline_end))
-
-    results = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return results
+    return list(_anomalies(str(DEFAULT_DB_PATH), baseline_start, baseline_end))
 
 
 @app.get("/api/rainfall/comparison")
@@ -334,46 +481,11 @@ async def get_period_comparison(
     period2_end: int = Query(2010, description="Second period end"),
 ) -> list[dict]:
     """Compare rainfall between two time periods."""
-    conn = get_db_connection()
-
-    cursor = conn.execute("""
-        WITH period1 AS (
-            SELECT station_id, AVG(annual_total) as avg_rainfall
-            FROM (
-                SELECT station_id, year, SUM(amount_mm) as annual_total
-                FROM rainfall
-                WHERE year BETWEEN ? AND ?
-                GROUP BY station_id, year
-            )
-            GROUP BY station_id
-        ),
-        period2 AS (
-            SELECT station_id, AVG(annual_total) as avg_rainfall
-            FROM (
-                SELECT station_id, year, SUM(amount_mm) as annual_total
-                FROM rainfall
-                WHERE year BETWEEN ? AND ?
-                GROUP BY station_id, year
-            )
-            GROUP BY station_id
-        )
-        SELECT
-            s.name as station_name,
-            s.latitude,
-            s.longitude,
-            p1.avg_rainfall as period1_avg,
-            p2.avg_rainfall as period2_avg,
-            (p2.avg_rainfall - p1.avg_rainfall) as change,
-            ((p2.avg_rainfall - p1.avg_rainfall) / p1.avg_rainfall * 100) as change_percent
-        FROM stations s
-        JOIN period1 p1 ON s.id = p1.station_id
-        JOIN period2 p2 ON s.id = p2.station_id
-        ORDER BY change_percent DESC
-    """, (period1_start, period1_end, period2_start, period2_end))
-
-    results = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return results
+    return list(_comparison(
+        str(DEFAULT_DB_PATH),
+        period1_start, period1_end,
+        period2_start, period2_end,
+    ))
 
 
 @app.get("/api/rainfall/changepoints")
@@ -394,7 +506,6 @@ async def get_changepoints(
 
     changepoints = detect_changepoints_ruptures(values, years, penalty=penalty)
 
-    # Add station info to each change point
     for cp in changepoints:
         cp["station_name"] = station_name
 

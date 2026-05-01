@@ -80,8 +80,73 @@ def test(ctx: Context, verbose: bool = False) -> None:
         ctx: Invoke context.
         verbose: Enable verbose output. Defaults to False.
     """
+    prepare_test_data(ctx)
     verbose_flag = "-v" if verbose else ""
     ctx.run(f"uv run pytest {verbose_flag}", pty=True)
+
+
+@task
+def prepare_test_data(ctx: Context, force: bool = False) -> None:
+    """Stage the production rainfall.db at tests/data/rainfall.db for the test suite.
+
+    The test database is a copy of data/rainfall.db, kept out of git.
+    If data/rainfall.db is missing the importer is run first.
+
+    Args:
+        ctx: Invoke context.
+        force: Re-copy even if tests/data/rainfall.db already exists.
+    """
+    src = DATA_DIR / "rainfall.db"
+    dst_dir = PROJECT_ROOT / "tests" / "data"
+    dst = dst_dir / "rainfall.db"
+
+    if dst.exists() and not force:
+        print(f"Test database already present: {dst}")
+        return
+
+    if not src.exists():
+        print(f"Source database missing at {src} -- running importer")
+        ctx.run("uv run python -m irish_rainfall.import_data", pty=True)
+
+    if not src.exists():
+        raise RuntimeError(f"Importer did not produce {src}")
+
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    import shutil
+    shutil.copy2(src, dst)
+
+    # Apply current schema (composite index, ANALYZE) to the staged copy.
+    import sqlite3
+    sys.path.insert(0, str(SRC_DIR))
+    from irish_rainfall.database import create_tables
+    conn = sqlite3.connect(dst)
+    try:
+        create_tables(conn)
+    finally:
+        conn.close()
+    print(f"Copied and migrated {src} -> {dst}")
+
+
+@task
+def migrate(ctx: Context, db: str = "") -> None:
+    """Apply the current schema (indexes, ANALYZE) to an existing database.
+
+    Args:
+        ctx: Invoke context.
+        db: Path to the SQLite database. Defaults to data/rainfall.db.
+    """
+    import sqlite3
+    sys.path.insert(0, str(SRC_DIR))
+    from irish_rainfall.database import DEFAULT_DB_PATH, create_tables
+    db_path = Path(db) if db else DEFAULT_DB_PATH
+    if not db_path.exists():
+        raise RuntimeError(f"Database not found: {db_path}")
+    conn = sqlite3.connect(db_path)
+    try:
+        create_tables(conn)
+    finally:
+        conn.close()
+    print(f"Migrated schema applied to {db_path}")
 
 
 @task

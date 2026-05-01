@@ -35,6 +35,11 @@ ENV/
 .pytest_cache/
 .coverage
 htmlcov/
+tests/data/
+
+# SQLite WAL sidecars
+*.db-shm
+*.db-wal
 
 # Playwright MCP screenshots
 .playwright-mcp/

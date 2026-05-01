@@ -9,7 +9,7 @@ DEFAULT_DB_PATH = Path(__file__).parent.parent.parent / "data" / "rainfall.db"
 
 
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
-    """Get a database connection.
+    """Get a database connection with read-friendly pragmas applied.
 
     Args:
         db_path: Path to the SQLite database. Defaults to data/rainfall.db.
@@ -22,11 +22,19 @@ def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA mmap_size=268435456")
+    conn.execute("PRAGMA cache_size=-20000")
     return conn
 
 
 def create_tables(conn: sqlite3.Connection) -> None:
-    """Create the database tables.
+    """Create (or migrate) the schema and statistics.
+
+    Idempotent: drops obsolete single-column rainfall indexes, installs the
+    composite covering index used by every aggregation query, and refreshes
+    sqlite_stat1 via ANALYZE so the planner picks the right index.
 
     Args:
         conn: SQLite connection object.
@@ -53,9 +61,14 @@ def create_tables(conn: sqlite3.Connection) -> None:
             UNIQUE (station_id, year, month)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_rainfall_station ON rainfall(station_id);
-        CREATE INDEX IF NOT EXISTS idx_rainfall_year ON rainfall(year);
-        CREATE INDEX IF NOT EXISTS idx_rainfall_month ON rainfall(month);
+        DROP INDEX IF EXISTS idx_rainfall_station;
+        DROP INDEX IF EXISTS idx_rainfall_year;
+        DROP INDEX IF EXISTS idx_rainfall_month;
+
+        CREATE INDEX IF NOT EXISTS idx_rainfall_station_year_month
+            ON rainfall(station_id, year, month, amount_mm);
+
+        ANALYZE;
     """)
     conn.commit()
 
